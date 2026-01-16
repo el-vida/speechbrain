@@ -11,9 +11,9 @@
 # Resources
 #SBATCH --time=48:00:00
 #SBATCH --partition=gpu
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=256G
-#SBATCH --gpus rtx3090:2
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
+#SBATCH --gpus rtx3090:1
 
 # Email notifications (set your email or remove these lines)
 #SBATCH --mail-type=END,FAIL

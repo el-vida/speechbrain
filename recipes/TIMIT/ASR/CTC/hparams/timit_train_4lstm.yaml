@@ -51,7 +51,7 @@ hop_length: 2
 # Encoder parameters (CNN auditory)
 auditory_channels: [16]
 auditory_kernel_size: (7, 7)
-auditory_frequency_stride: [1]
+auditory_frequency_stride: 1
 
 # LSTM parameters
 lstm_hidden: 512
