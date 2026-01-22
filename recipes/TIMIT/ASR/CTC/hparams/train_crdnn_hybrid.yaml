@@ -47,7 +47,7 @@ cnn_kernelsize: (3, 3)
 # Hybrid RNN parameters
 rnn_hidden_size: 512
 rnn_bidirectional: True
-hybrid_layer_types: [lstm, ligru, lstm, lstm]
+hybrid_layer_types: [ligru, ligru, snn, snn]
 # SNN parameters for use in hybrid layer
 snn_sfa_portion: 0.5
 snn_rnn_portion: 0.5
