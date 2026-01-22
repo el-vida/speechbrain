@@ -39,7 +39,7 @@ batch_size: 8
 sorting: ascending
 lr: 1.e-3
 annealing_factor: 0.8
-annealing_patience: 0
+annealing_patience: 5
 
 # Feature parameters
 sample_rate: 16000
@@ -63,7 +63,7 @@ lstm_dropout: 0.15
 phoneme_ctc_rate_hz: 25
 phoneme_num_layers: 2
 phoneme_features: 512
-activation: !name:torch.nn.LeakyReLU
+activation: !new:torch.nn.LeakyReLU
 dropout: 0.15
 
 # Output classifier
@@ -142,33 +142,36 @@ normalize: !new:speechbrain.processing.features.InputNormalization
 cnn_auditory: !new:torch.nn.Sequential
     - !new:torch.nn.Conv2d
         in_channels: 1
-        out_channels: !ref <auditory_channels>[0]
-        kernel_size: !ref <auditory_kernel_size>
-        stride: (1, !ref <auditory_frequency_stride>[0])
-        padding: (!ref <auditory_kernel_size>[0], 0)
-    - !name:torch.nn.ReLU
+        out_channels: 16
+        kernel_size: (7, 7)
+        stride: (1, 1)
+        padding: (7, 0)
+    - !new:torch.nn.BatchNorm2d
+        num_features: 16
+    - !new:torch.nn.LeakyReLU
+    - !new:torch.nn.Dropout2d
+        p: !ref <dropout>
 
 # LSTM layers for cortex processing
 lstm: !new:speechbrain.nnet.RNN.LSTM
-    input_size: 416  # This will be set dynamically in the code (auditory_channels * num_feats_after_cnn)
+    input_size: 1184
     hidden_size: !ref <lstm_hidden>
     num_layers: !ref <lstm_layers>
     dropout: !ref <lstm_dropout>
     bidirectional: !ref <lstm_bidirectional>
-    batch_first: True
 
 # Phoneme output layers
 linear_phoneme: !new:torch.nn.Sequential
     - !new:torch.nn.Linear
-        in_features: !ref <lstm_hidden>
+        in_features: 1024
         out_features: !ref <phoneme_features>
-    - !ref <activation>
+    - !new:torch.nn.LeakyReLU
     - !new:torch.nn.Dropout
         p: !ref <dropout>
     - !new:torch.nn.Linear
         in_features: !ref <phoneme_features>
         out_features: !ref <phoneme_features>
-    - !ref <activation>
+    - !new:torch.nn.LeakyReLU
     - !new:torch.nn.Dropout
         p: !ref <dropout>
 

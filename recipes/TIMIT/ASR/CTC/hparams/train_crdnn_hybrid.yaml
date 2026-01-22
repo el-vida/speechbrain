@@ -1,13 +1,14 @@
 # ################################
-# Model: CTC ASR on TIMIT with CRDNN (with LiGRU)
+# Model: CTC ASR on TIMIT with CRDNN (with Hybrid RNN - LSTM, LiGRU, RNN, LSTM)
 # Additions: TimeDomainSpecAugment
 # Authors: Mirco Ravanelli & Peter Plantinga 2020
+# Modified for Hybrid RNN by Elija Vida 2026
 # ################################
 
 # Seed needs to be set at top of yaml, before objects with parameters are made
 seed: 1986
 __set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
-output_folder: !ref results/liGRU #augment_noise_CRDNN/<seed>
+output_folder: !ref results/crdnn-hybrid-lstm-ligru-rnn-lstm
 test_wer_file: !ref <output_folder>/wer_test.txt
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -42,9 +43,21 @@ dropout: 0.15
 cnn_blocks: 2
 cnn_channels: (128, 256)
 cnn_kernelsize: (3, 3)
-rnn_layers: 4
-rnn_neurons: 512
+
+# Hybrid RNN parameters
+rnn_hidden_size: 512
 rnn_bidirectional: True
+hybrid_layer_types: [lstm, ligru, lstm, lstm]
+# SNN parameters for use in hybrid layer
+snn_sfa_portion: 0.5
+snn_rnn_portion: 0.5
+snn_use_lateral_rnn: False
+snn_tauu_lim: [3.0, 25.0]
+snn_tauw_lim: [30.0, 350.0]
+snn_a_lim: [-0.5, 5.0]
+snn_b_lim: [0.0, 2.0]
+snn_use_normal_init: False
+snn_threshold: 1.0
 dnn_blocks: 2
 dnn_neurons: 512
 
@@ -129,7 +142,8 @@ compute_features: !new:speechbrain.lobes.features.Fbank
     n_fft: !ref <n_fft>
     n_mels: !ref <n_mels>
 
-model: !new:speechbrain.lobes.models.CRDNN.CRDNN
+# CNN layers
+cnn: !new:speechbrain.lobes.models.CRDNN.CRDNN
     input_size: !ref <n_mels>
     activation: !ref <activation>
     dropout: !ref <dropout>
@@ -137,11 +151,42 @@ model: !new:speechbrain.lobes.models.CRDNN.CRDNN
     cnn_channels: !ref <cnn_channels>
     cnn_kernelsize: !ref <cnn_kernelsize>
     time_pooling: True
-    rnn_layers: !ref <rnn_layers>
-    rnn_neurons: !ref <rnn_neurons>
-    rnn_bidirectional: !ref <rnn_bidirectional>
-    dnn_blocks: !ref <dnn_blocks>
-    dnn_neurons: !ref <dnn_neurons>
+    rnn_layers: 0  # Skip RNN in CRDNN, use hybrid RNN instead
+
+# Hybrid RNN layer
+hybrid_rnn: !new:hybrid_rnn.HybridRNN
+    input_size: 512  # Output size after CNN + pooling (2 CNN filters * 256)
+    hidden_size: !ref <rnn_hidden_size>
+    num_layers: !ref <hybrid_layer_types>.__len__
+    layer_types: !ref <hybrid_layer_types>
+    bidirectional: !ref <rnn_bidirectional>
+    dropout: !ref <dropout>
+    snn_kwargs:
+        sfa_portion: !ref <snn_sfa_portion>
+        rnn_portion: !ref <snn_rnn_portion>
+        use_lateral_rnn: !ref <snn_use_lateral_rnn>
+        tauu_lim: !ref <snn_tauu_lim>
+        tauw_lim: !ref <snn_tauw_lim>
+        a_lim: !ref <snn_a_lim>
+        b_lim: !ref <snn_b_lim>
+        use_normal_init: !ref <snn_use_normal_init>
+        threshold: !ref <snn_threshold>
+
+# DNN layers
+dnn: !new:speechbrain.nnet.containers.Sequential
+    input_shape: [null, null, 1024]
+    
+dnn_block1: !new:speechbrain.lobes.models.CRDNN.DNN_Block
+    input_shape: [null, null, 1024]
+    neurons: !ref <dnn_neurons>
+    activation: !ref <activation>
+    dropout: !ref <dropout>
+
+dnn_block2: !new:speechbrain.lobes.models.CRDNN.DNN_Block
+    input_shape: [null, null, !ref <dnn_neurons>]
+    neurons: !ref <dnn_neurons>
+    activation: !ref <activation>
+    dropout: !ref <dropout>
 
 output: !new:speechbrain.nnet.linear.Linear
     input_size: !ref <dnn_neurons>
@@ -163,16 +208,22 @@ lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
     patient: 0
 
 modules:
-    model: !ref <model>
+    cnn: !ref <cnn>
+    hybrid_rnn: !ref <hybrid_rnn>
+    dnn_block1: !ref <dnn_block1>
+    dnn_block2: !ref <dnn_block2>
     output: !ref <output>
     normalize: !ref <normalize>
 
-jit_module_keys: [model]
+jit_module_keys: [cnn]
 
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        model: !ref <model>
+        cnn: !ref <cnn>
+        hybrid_rnn: !ref <hybrid_rnn>
+        dnn_block1: !ref <dnn_block1>
+        dnn_block2: !ref <dnn_block2>
         output: !ref <output>
         scheduler: !ref <lr_annealing>
         normalizer: !ref <normalize>

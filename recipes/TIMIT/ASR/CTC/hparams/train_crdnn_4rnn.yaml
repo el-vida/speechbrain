@@ -1,13 +1,14 @@
 # ################################
-# Model: CTC ASR on TIMIT with CRDNN (with LiGRU)
+# Model: CTC ASR on TIMIT with CRDNN (with 4-layer vanilla RNN)
 # Additions: TimeDomainSpecAugment
 # Authors: Mirco Ravanelli & Peter Plantinga 2020
+# Modified for 4-layer vanilla RNN by Elija Vida
 # ################################
 
 # Seed needs to be set at top of yaml, before objects with parameters are made
 seed: 1986
 __set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
-output_folder: !ref results/liGRU #augment_noise_CRDNN/<seed>
+output_folder: !ref results/crdnn-4rnn
 test_wer_file: !ref <output_folder>/wer_test.txt
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -42,6 +43,7 @@ dropout: 0.15
 cnn_blocks: 2
 cnn_channels: (128, 256)
 cnn_kernelsize: (3, 3)
+rnn_class: !name:speechbrain.nnet.RNN.RNN
 rnn_layers: 4
 rnn_neurons: 512
 rnn_bidirectional: True
@@ -137,6 +139,7 @@ model: !new:speechbrain.lobes.models.CRDNN.CRDNN
     cnn_channels: !ref <cnn_channels>
     cnn_kernelsize: !ref <cnn_kernelsize>
     time_pooling: True
+    rnn_class: !ref <rnn_class>
     rnn_layers: !ref <rnn_layers>
     rnn_neurons: !ref <rnn_neurons>
     rnn_bidirectional: !ref <rnn_bidirectional>

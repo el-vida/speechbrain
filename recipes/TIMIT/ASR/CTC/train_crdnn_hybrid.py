@@ -1,92 +1,76 @@
 #!/usr/bin/env python3
-#
-# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
-#
-# SPDX-FileContributor: Elija Vida <evida@idiap.ch>
-#
-# SPDX-License-Identifier: BSD-3-Clause
-#
-"""
-Speechbrain recipe for training a phoneme recognizer on TIMIT using LSTM,
-adapted from the SNN-based recipe to use SpeechBrain's built-in LSTM layers.
+"""Recipe for training a phoneme recognizer on TIMIT with CRDNN + Hybrid RNN.
+The system relies on a model trained with CTC.
+Greedy search is using for validation, while beamsearch
+is used at test time to improve the system performance.
 
 To run this recipe, do the following:
-> python run_training_lstm.py hparams/timit_train_4lstm.yaml
+> python train_crdnn_hybrid.py hparams/train_crdnn_hybrid.yaml --data_folder /path/to/TIMIT
+
+Note on Compilation:
+Enabling the just-in-time (JIT) compiler with --jit significantly improves code performance,
+resulting in a 50-60% speed boost. We highly recommend utilizing the JIT compiler for optimal results.
+
+Authors
+ * Mirco Ravanelli 2020
+ * Peter Plantinga 2020
+ * Modified for Hybrid RNN by Elija Vida 2026
 """
 
-import logging
+import os
 import sys
 
-import speechbrain as sb
-import torch
-import torch.nn.functional as F
 from hyperpyyaml import load_hyperpyyaml
-from speechbrain.utils.distributed import if_main_process
-from speechbrain.utils.distributed import run_on_main
-from timit_prepare import prepare_timit
-from train import dataio_prep
 
-logger = logging.getLogger(__name__)
+import speechbrain as sb
+from speechbrain.utils.distributed import if_main_process, run_on_main
+from speechbrain.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
-class ASR_Brain_LSTM(sb.Brain):
-    """
-    Trainer class for speech recognition using LSTM encoder.
-    """
-
+# Define training procedure
+class ASR_Brain(sb.Brain):
     def compute_forward(self, batch, stage):
-
-        # Get elements from input batch
+        "Given an input batch it computes the phoneme probabilities."
         batch = batch.to(self.device)
         wavs, wav_lens = batch.sig
 
-        # Apply data augmentation to waveform
+        # Add waveform augmentation if specified.
         if stage == sb.Stage.TRAIN and hasattr(self.hparams, "wav_augment"):
             wavs, wav_lens = self.hparams.wav_augment(wavs, wav_lens)
 
-        # Compute acoustic features
         feats = self.hparams.compute_features(wavs)
         feats = self.modules.normalize(feats, wav_lens)
-
-        # Pass through CNN auditory layer
-        # Add channel dimension for Conv2d: (batch, time, freq) -> (batch, 1, time, freq)
-        x = feats.unsqueeze(dim=1)
-        x = self.modules.cnn_auditory(x)
         
-        # Reshape CNN output for LSTM: (batch, channels, time, freq) -> (batch, time, channels*freq)
-        batch_size, num_channels, time_steps, num_freqs = x.shape
-        x = x.permute(0, 2, 1, 3)  # (batch, time, channels, freq)
-        x = x.reshape(batch_size, time_steps, -1)  # (batch, time, channels*freq)
+        # Pass through CNN
+        cnn_out = self.modules.cnn(feats)
         
-        # Pass through LSTM layers
-        lstm_out, _ = self.modules.lstm(x)
+        # Pass through Hybrid RNN
+        rnn_out, _ = self.modules.hybrid_rnn(cnn_out)
         
-        # Pass through phoneme feature layers
-        x = self.modules.linear_phoneme(lstm_out)
+        # Pass through DNN blocks
+        dnn_out = self.modules.dnn_block1(rnn_out)
+        dnn_out = self.modules.dnn_block2(dnn_out)
         
-        # Phoneme classifier
-        pout = self.modules.classifier(x)
-        pout = self.hparams.log_softmax(pout)
+        # Output layer
+        out = self.modules.output(dnn_out)
+        pout = self.hparams.log_softmax(out)
 
         return pout, wav_lens
 
     def compute_objectives(self, predictions, batch, stage):
-
-        # Get model predictions and ground truths
+        "Given the network predictions and targets computed the CTC loss."
         pout, pout_lens = predictions
         phns, phn_lens = batch.phn_encoded
 
-        # Waveform augmentation
         if stage == sb.Stage.TRAIN and hasattr(self.hparams, "wav_augment"):
             phns = self.hparams.wav_augment.replicate_labels(phns)
             phn_lens = self.hparams.wav_augment.replicate_labels(phn_lens)
 
-        # Compute CTC loss
-        ctc_loss = self.hparams.compute_cost(pout, phns, pout_lens, phn_lens)
+        loss = self.hparams.compute_cost(pout, phns, pout_lens, phn_lens)
         self.ctc_metrics.append(batch.id, pout, phns, pout_lens, phn_lens)
-        loss = ctc_loss
 
-        # Decode probabilities into phonemes
         if stage != sb.Stage.TRAIN:
             sequence = sb.decoders.ctc_greedy_decode(
                 pout, pout_lens, blank_id=self.hparams.blank_index
@@ -134,7 +118,9 @@ class ASR_Brain_LSTM(sb.Brain):
                 test_stats={"loss": stage_loss, "PER": per},
             )
             if if_main_process():
-                with open(self.hparams.test_wer_file, "w") as w:
+                with open(
+                    self.hparams.test_wer_file, "w", encoding="utf-8"
+                ) as w:
                     w.write("CTC loss stats:\n")
                     self.ctc_metrics.write_stats(w)
                     w.write("\nPER stats:\n")
@@ -145,14 +131,97 @@ class ASR_Brain_LSTM(sb.Brain):
                     )
 
 
+def dataio_prep(hparams):
+    "Creates the datasets and their data processing pipelines."
+
+    data_folder = hparams["data_folder"]
+
+    # 1. Declarations:
+    train_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["train_annotation"],
+        replacements={"data_root": data_folder},
+    )
+
+    if hparams["sorting"] == "ascending":
+        # we sort training data to speed up training and get better results.
+        train_data = train_data.filtered_sorted(sort_key="duration")
+        # when sorting do not shuffle in dataloader ! otherwise is pointless
+        hparams["train_dataloader_opts"]["shuffle"] = False
+
+    elif hparams["sorting"] == "descending":
+        train_data = train_data.filtered_sorted(
+            sort_key="duration", reverse=True
+        )
+        # when sorting do not shuffle in dataloader ! otherwise is pointless
+        hparams["train_dataloader_opts"]["shuffle"] = False
+
+    elif hparams["sorting"] == "random":
+        pass
+
+    else:
+        raise NotImplementedError(
+            "sorting must be random, ascending or descending"
+        )
+
+    valid_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["valid_annotation"],
+        replacements={"data_root": data_folder},
+    )
+    valid_data = valid_data.filtered_sorted(sort_key="duration")
+
+    test_data = sb.dataio.dataset.DynamicItemDataset.from_json(
+        json_path=hparams["test_annotation"],
+        replacements={"data_root": data_folder},
+    )
+    test_data = test_data.filtered_sorted(sort_key="duration")
+
+    datasets = [train_data, valid_data, test_data]
+    label_encoder = sb.dataio.encoder.CTCTextEncoder()
+
+    # 2. Define audio pipeline:
+    @sb.utils.data_pipeline.takes("wav")
+    @sb.utils.data_pipeline.provides("sig")
+    def audio_pipeline(wav):
+        sig = sb.dataio.dataio.read_audio(wav)
+        return sig
+
+    sb.dataio.dataset.add_dynamic_item(datasets, audio_pipeline)
+
+    # 3. Define text pipeline:
+    @sb.utils.data_pipeline.takes("phn")
+    @sb.utils.data_pipeline.provides("phn_list", "phn_encoded")
+    def text_pipeline(phn):
+        phn_list = phn.strip().split()
+        yield phn_list
+        phn_encoded = label_encoder.encode_sequence_torch(phn_list)
+        yield phn_encoded
+
+    sb.dataio.dataset.add_dynamic_item(datasets, text_pipeline)
+
+    # 3. Fit encoder:
+    # Load or compute the label encoder (with multi-gpu dpp support)
+    lab_enc_file = os.path.join(hparams["save_folder"], "label_encoder.txt")
+    label_encoder.load_or_create(
+        path=lab_enc_file,
+        from_didatasets=[train_data],
+        output_key="phn_list",
+        special_labels={"blank_label": hparams["blank_index"]},
+        sequence_input=True,
+    )
+
+    # 4. Set output:
+    sb.dataio.dataset.set_output_keys(datasets, ["id", "sig", "phn_encoded"])
+
+    return train_data, valid_data, test_data, label_encoder
+
+
 # Begin Recipe!
 if __name__ == "__main__":
-
-    # Load config
+    # CLI:
     hparams_file, run_opts, overrides = sb.parse_arguments(sys.argv[1:])
 
     # Load hyperparameters file with command-line overrides
-    with open(hparams_file) as fin:
+    with open(hparams_file, encoding="utf-8") as fin:
         hparams = load_hyperpyyaml(fin, overrides)
 
     # Dataset prep (parsing TIMIT and annotation into csv files)
@@ -168,7 +237,7 @@ if __name__ == "__main__":
         overrides=overrides,
     )
 
-    # Create json files for dataset
+    # multi-gpu (ddp) save data preparation
     run_on_main(
         prepare_timit,
         kwargs={
@@ -180,15 +249,13 @@ if __name__ == "__main__":
             "uppercase": hparams["uppercase"],
         },
     )
-
-    # Create csv file for noise augmentations
     run_on_main(hparams["prepare_noise_data"])
 
-    # Dataset IO preparation
+    # Dataset IO prep: creating Dataset objects and proper encodings for phones
     train_data, valid_data, test_data, label_encoder = dataio_prep(hparams)
 
     # Trainer initialization
-    asr_brain = ASR_Brain_LSTM(
+    asr_brain = ASR_Brain(
         modules=hparams["modules"],
         opt_class=hparams["opt_class"],
         hparams=hparams,
@@ -197,7 +264,7 @@ if __name__ == "__main__":
     )
     asr_brain.label_encoder = label_encoder
 
-    # Training and validation loop
+    # Training/validation loop
     asr_brain.fit(
         asr_brain.hparams.epoch_counter,
         train_data,
@@ -206,7 +273,7 @@ if __name__ == "__main__":
         valid_loader_kwargs=hparams["valid_dataloader_opts"],
     )
 
-    # Testing
+    # Test
     asr_brain.evaluate(
         test_data,
         min_key="PER",
