@@ -4,12 +4,12 @@
 
 # Job name and output
 #SBATCH --job-name=timit_crdnn_hybrid
-#SBATCH --output=/idiap/temp/evida/speechbrain/recipes/TIMIT/ASR/CTC/results/crdnn-hybrid-lstm-ligru-rnn-lstm/%x.%j.out
-#SBATCH --error=/idiap/temp/evida/speechbrain/recipes/TIMIT/ASR/CTC/results/crdnn-hybrid-lstm-ligru-rnn-lstm/%x.%j.err
+#SBATCH --output=/idiap/temp/evida/speechbrain/recipes/TIMIT/ASR/CTC/results/crdnn-hybrid/%x.%j.out
+#SBATCH --error=/idiap/temp/evida/speechbrain/recipes/TIMIT/ASR/CTC/results/crdnn-hybrid/%x.%j.err
 #SBATCH --account=spider
 
 # Resources
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=gpu
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=128G

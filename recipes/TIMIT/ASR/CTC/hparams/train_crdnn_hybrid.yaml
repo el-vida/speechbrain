@@ -1,14 +1,14 @@
 # ################################
-# Model: CTC ASR on TIMIT with CRDNN (with Hybrid RNN - LSTM, LiGRU, RNN, LSTM)
-# Additions: TimeDomainSpecAugment
+# Model: CTC ASR on TIMIT with ASR Encoder (matching SNN but with hybrid RNN)
+# Using sparse.encoder_asr.ASREncoder with HybridRNN for cortex layers
 # Authors: Mirco Ravanelli & Peter Plantinga 2020
 # Modified for Hybrid RNN by Elija Vida 2026
 # ################################
 
 # Seed needs to be set at top of yaml, before objects with parameters are made
 seed: 1986
-__set_seed: !apply:speechbrain.utils.seed_everything [!ref <seed>]
-output_folder: !ref results/crdnn-hybrid-lstm-ligru-rnn-lstm
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref results/crdnn-hybrid
 test_wer_file: !ref <output_folder>/wer_test.txt
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
@@ -18,51 +18,63 @@ data_folder: !PLACEHOLDER  # e.g. /path/to/TIMIT
 train_annotation: !ref <save_folder>/train.json
 valid_annotation: !ref <save_folder>/dev.json
 test_annotation: !ref <save_folder>/test.json
-skip_prep: False # Skip data preparation
-uppercase: True # Must be True when the TIMIT dataset is in the upper-case version
+skip_prep: False
+uppercase: True
 
 # Data for augmentation
-data_folder_noise: !ref <data_folder>/noise # The noisy sequences for data augmentation will automatically be downloaded here.
+data_folder_noise: !ref <data_folder>/noise
 NOISE_DATASET_URL: https://www.dropbox.com/scl/fi/a09pj97s5ifan81dqhi4n/noises.zip?rlkey=j8b0n9kdjdr32o1f06t0cw5b7&dl=1
-noise_annotation: !ref <save_folder>/noise.csv #The data manifest files are created by the data preparation script
+noise_annotation: !ref <save_folder>/noise.csv
 
 ####################### Training Parameters ####################################
 number_of_epochs: 50
 batch_size: 8
-lr: 1.0
-sorting: ascending # choose between ascending, descending and random
+lr: 1.e-3
+sorting: ascending
 
 # Feature parameters
 sample_rate: 16000
 n_fft: 400
-n_mels: 40
+n_mels: 80
+window_length: 25
+hop_length: 2
 
-####################### Model Parameters #######################################
+####################### Model Parameters (matching SNN) ##########################
+# Auditory (CNN) parameters
+auditory_channels: [16]
+auditory_kernel_size: (7, 7)
+auditory_frequency_stride: [1]
+auditory_sfa_portion: 0.
+auditory_rnn_portion: 0.
+auditory_use_lateral_rnn: True
+
+# Cortex (RNN) parameters - use HybridRNN to replace SNN layers
+cortex_layer_sizes: [512, 512, 512, 512]
+cortex_feedforward_portions: [1.0, 1.0, 1.0, 1.0]
+cortex_rnn_portions: [0.5, 0.5, 0.5, 0.5]
+cortex_sfa_portions: [0., 0., 0., 0.]
+cortex_use_lateral_rnn: False
+
+# HybridRNN layer types - customize to compare LSTM, LiGRU, RNN, GRU, SNN combinations
+hybrid_layer_types: [snn, snn, snn, snn]
+
+# Phoneme output parameters
+phoneme_ctc_rate_hz: 25
+phoneme_num_layers: 2
+phoneme_features: 512
 activation: !name:torch.nn.LeakyReLU
 dropout: 0.15
-cnn_blocks: 2
-cnn_channels: (128, 256)
-cnn_kernelsize: (3, 3)
 
-# Hybrid RNN parameters
-rnn_hidden_size: 512
-rnn_bidirectional: True
-hybrid_layer_types: [ligru, ligru, snn, snn]
-# SNN parameters for use in hybrid layer
-snn_sfa_portion: 0.5
-snn_rnn_portion: 0.5
-snn_use_lateral_rnn: False
-snn_tauu_lim: [3.0, 25.0]
-snn_tauw_lim: [30.0, 350.0]
-snn_a_lim: [-0.5, 5.0]
-snn_b_lim: [0.0, 2.0]
-snn_use_normal_init: False
-snn_threshold: 1.0
-dnn_blocks: 2
-dnn_neurons: 512
+# AdLIF neuron parameters (for cortex layer adaptation)
+adlif_tauu_lim: [3.0, 25.0]
+adlif_tauw_lim: [30.0, 350.0]
+adlif_a_lim: [-0.5, 5.0]
+adlif_b_lim: [0.0, 2.0]
+adlif_use_normal_init: False
+adlif_threshold: 1.0
 
-# Outputs
-output_neurons: 40
+# Output classifier
+vocab_size: 40
 blank_index: 0
 
 # Dataloader options
@@ -79,19 +91,14 @@ test_dataloader_opts:
     batch_size: !ref <batch_size>
     num_workers: !ref <num_workers>
 
-normalize: !new:speechbrain.processing.features.InputNormalization
-    norm_type: global
-
 ############################## Augmentations ###################################
 
-# Download and prepare the dataset of noisy sequences for augmentation
 prepare_noise_data: !name:speechbrain.augment.preparation.prepare_dataset_from_URL
     URL: !ref <NOISE_DATASET_URL>
     dest_folder: !ref <data_folder_noise>
     ext: wav
     csv_file: !ref <noise_annotation>
 
-# Add noise to input signal
 add_noise: !new:speechbrain.augment.time_domain.AddNoise
     csv_file: !ref <noise_annotation>
     snr_low: 0
@@ -100,12 +107,10 @@ add_noise: !new:speechbrain.augment.time_domain.AddNoise
     clean_sample_rate: !ref <sample_rate>
     num_workers: !ref <num_workers>
 
-# Speed perturbation
 speed_perturb: !new:speechbrain.augment.time_domain.SpeedPerturb
     orig_freq: !ref <sample_rate>
     speeds: [95, 100, 105]
 
-# Frequency drop: randomly drops a number of frequency bands to zero.
 drop_freq: !new:speechbrain.augment.time_domain.DropFreq
     drop_freq_low: 0
     drop_freq_high: 1
@@ -113,14 +118,12 @@ drop_freq: !new:speechbrain.augment.time_domain.DropFreq
     drop_freq_count_high: 3
     drop_freq_width: 0.05
 
-# Time drop: randomly drops a number of temporal chunks.
 drop_chunk: !new:speechbrain.augment.time_domain.DropChunk
     drop_length_low: 1000
     drop_length_high: 2000
     drop_count_low: 1
     drop_count_high: 5
 
-# Augmenter: Combines previously defined augmentations to perform data augmentation
 wav_augment: !new:speechbrain.augment.augmenter.Augmenter
     concat_original: True
     min_augmentations: 4
@@ -141,65 +144,49 @@ compute_features: !new:speechbrain.lobes.features.Fbank
     sample_rate: !ref <sample_rate>
     n_fft: !ref <n_fft>
     n_mels: !ref <n_mels>
+    win_length: !ref <window_length>
+    hop_length: !ref <hop_length>
 
-# CNN layers
-cnn: !new:speechbrain.lobes.models.CRDNN.CRDNN
-    input_size: !ref <n_mels>
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+
+# ASR Encoder using sparse module (same auditory CNN as SNN)
+model: !new:sparse.encoder_asr.ASREncoder
+    num_mel_bins: !ref <n_mels>
+    auditory_channels: !ref <auditory_channels>
+    auditory_kernel_size: !ref <auditory_kernel_size>
+    auditory_frequency_stride: !ref <auditory_frequency_stride>
+    auditory_sfa_portion: !ref <auditory_sfa_portion>
+    auditory_rnn_portion: !ref <auditory_rnn_portion>
+    auditory_use_lateral_rnn: !ref <auditory_use_lateral_rnn>
+    cortex_layer_sizes: !ref <cortex_layer_sizes>
+    cortex_sfa_portions: !ref <cortex_sfa_portions>
+    cortex_rnn_portions: !ref <cortex_rnn_portions>
+    cortex_feedforward_portions: !ref <cortex_feedforward_portions>
+    cortex_use_lateral_rnn: !ref <cortex_use_lateral_rnn>
+    phoneme_ctc_rate_hz: !ref <phoneme_ctc_rate_hz>
+    phoneme_num_layers: !ref <phoneme_num_layers>
+    phoneme_features: !ref <phoneme_features>
     activation: !ref <activation>
     dropout: !ref <dropout>
-    cnn_blocks: !ref <cnn_blocks>
-    cnn_channels: !ref <cnn_channels>
-    cnn_kernelsize: !ref <cnn_kernelsize>
-    time_pooling: True
-    rnn_layers: 0  # Skip RNN in CRDNN, use hybrid RNN instead
+    adlif_tauu_lim: !ref <adlif_tauu_lim>
+    adlif_tauw_lim: !ref <adlif_tauw_lim>
+    adlif_a_lim: !ref <adlif_a_lim>
+    adlif_b_lim: !ref <adlif_b_lim>
+    adlif_use_normal_init: !ref <adlif_use_normal_init>
+    adlif_threshold: !ref <adlif_threshold>
+    dt: !ref <hop_length>
 
-# Hybrid RNN layer
-hybrid_rnn: !new:hybrid_rnn.HybridRNN
-    input_size: 512  # Output size after CNN + pooling (2 CNN filters * 256)
-    hidden_size: !ref <rnn_hidden_size>
-    num_layers: !ref <hybrid_layer_types>.__len__
-    layer_types: !ref <hybrid_layer_types>
-    bidirectional: !ref <rnn_bidirectional>
-    dropout: !ref <dropout>
-    snn_kwargs:
-        sfa_portion: !ref <snn_sfa_portion>
-        rnn_portion: !ref <snn_rnn_portion>
-        use_lateral_rnn: !ref <snn_use_lateral_rnn>
-        tauu_lim: !ref <snn_tauu_lim>
-        tauw_lim: !ref <snn_tauw_lim>
-        a_lim: !ref <snn_a_lim>
-        b_lim: !ref <snn_b_lim>
-        use_normal_init: !ref <snn_use_normal_init>
-        threshold: !ref <snn_threshold>
-
-# DNN layers
-dnn: !new:speechbrain.nnet.containers.Sequential
-    input_shape: [null, null, 1024]
-    
-dnn_block1: !new:speechbrain.lobes.models.CRDNN.DNN_Block
-    input_shape: [null, null, 1024]
-    neurons: !ref <dnn_neurons>
-    activation: !ref <activation>
-    dropout: !ref <dropout>
-
-dnn_block2: !new:speechbrain.lobes.models.CRDNN.DNN_Block
-    input_shape: [null, null, !ref <dnn_neurons>]
-    neurons: !ref <dnn_neurons>
-    activation: !ref <activation>
-    dropout: !ref <dropout>
-
-output: !new:speechbrain.nnet.linear.Linear
-    input_size: !ref <dnn_neurons>
-    n_neurons: !ref <output_neurons>
+classifier: !new:speechbrain.nnet.linear.Linear
+    input_size: !ref <phoneme_features>
+    n_neurons: !ref <vocab_size>
     bias: True
 
 log_softmax: !new:speechbrain.nnet.activations.Softmax
     apply_log: True
 
-opt_class: !name:torch.optim.Adadelta
-    rho: 0.95
+opt_class: !name:torch.optim.Adam
     lr: !ref <lr>
-    eps: 1.e-8
 
 lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
     initial_value: !ref <lr>
@@ -208,23 +195,15 @@ lr_annealing: !new:speechbrain.nnet.schedulers.NewBobScheduler
     patient: 0
 
 modules:
-    cnn: !ref <cnn>
-    hybrid_rnn: !ref <hybrid_rnn>
-    dnn_block1: !ref <dnn_block1>
-    dnn_block2: !ref <dnn_block2>
-    output: !ref <output>
+    model: !ref <model>
+    classifier: !ref <classifier>
     normalize: !ref <normalize>
-
-jit_module_keys: [cnn]
 
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>
     recoverables:
-        cnn: !ref <cnn>
-        hybrid_rnn: !ref <hybrid_rnn>
-        dnn_block1: !ref <dnn_block1>
-        dnn_block2: !ref <dnn_block2>
-        output: !ref <output>
+        model: !ref <model>
+        classifier: !ref <classifier>
         scheduler: !ref <lr_annealing>
         normalizer: !ref <normalize>
         counter: !ref <epoch_counter>

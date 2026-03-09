@@ -170,23 +170,34 @@ class HybridRNN(nn.Module):
         """Build a single layer of the specified type."""
         layer_type = layer_type.lower().strip()
         
+        # Calculate output size for bidirectional layers
+        output_size = hidden_size * (2 if bidirectional else 1)
+        
+        # Build input_shape for SpeechBrain RNN layers: [batch, time, features]
+        # Use 1 as batch size placeholder for shape inference
+        input_shape = [1, None, input_size]
+        
         if layer_type == 'lstm':
             return sb.nnet.RNN.LSTM(
+                input_shape=input_shape,
                 hidden_size=hidden_size,
                 bidirectional=bidirectional,
             )
         elif layer_type == 'ligru':
             return sb.nnet.RNN.LiGRU(
+                input_shape=input_shape,
                 hidden_size=hidden_size,
                 bidirectional=bidirectional,
             )
         elif layer_type == 'rnn':
             return sb.nnet.RNN.RNN(
+                input_shape=input_shape,
                 hidden_size=hidden_size,
                 bidirectional=bidirectional,
             )
         elif layer_type == 'gru':
             return sb.nnet.RNN.GRU(
+                input_shape=input_shape,
                 hidden_size=hidden_size,
                 bidirectional=bidirectional,
             )

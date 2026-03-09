@@ -43,18 +43,16 @@ class ASR_Brain(sb.Brain):
         feats = self.hparams.compute_features(wavs)
         feats = self.modules.normalize(feats, wav_lens)
         
-        # Pass through CNN
-        cnn_out = self.modules.cnn(feats)
+        # Pass through ASR Encoder (auditory + cortex + phoneme output)
+        encoder_out = self.modules.model(feats)
+        # ASREncoder returns a tuple (output, hidden_states), use only the output
+        if isinstance(encoder_out, tuple):
+            phoneme_probs = encoder_out[0]
+        else:
+            phoneme_probs = encoder_out
         
-        # Pass through Hybrid RNN
-        rnn_out, _ = self.modules.hybrid_rnn(cnn_out)
-        
-        # Pass through DNN blocks
-        dnn_out = self.modules.dnn_block1(rnn_out)
-        dnn_out = self.modules.dnn_block2(dnn_out)
-        
-        # Output layer
-        out = self.modules.output(dnn_out)
+        # Pass through classifier
+        out = self.modules.classifier(phoneme_probs)
         pout = self.hparams.log_softmax(out)
 
         return pout, wav_lens

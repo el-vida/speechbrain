@@ -35,7 +35,7 @@ sorting: ascending # choose between ascending, descending and random
 # Feature parameters
 sample_rate: 16000
 n_fft: 400
-n_mels: 40
+n_mels: 80
 
 ####################### Model Parameters #######################################
 activation: !name:torch.nn.LeakyReLU
